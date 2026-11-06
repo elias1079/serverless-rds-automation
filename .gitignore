@@ -218,3 +218,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+.terraform/
+*.tfstate
+*.tfstate.*
+.aws-sam/
+samconfig.local.toml
+.env

@@ -1,0 +1,41 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Serverless RDS automation - request intake
+
+Resources:
+  RequestsTopic:
+    Type: AWS::SNS::Topic
+
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600   # 14 days
+
+  RequestsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 180
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  RequestsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues: [!Ref RequestsQueue]
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: { Service: sns.amazonaws.com }
+            Action: sqs:SendMessage
+            Resource: !GetAtt RequestsQueue.Arn
+            Condition:
+              ArnEquals: { 'aws:SourceArn': !Ref RequestsTopic }
+
+  RequestsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref RequestsTopic
+      Protocol: sqs
+      Endpoint: !GetAtt RequestsQueue.Arn
+      RawMessageDelivery: true

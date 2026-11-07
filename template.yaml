@@ -39,3 +39,133 @@ Resources:
       Protocol: sqs
       Endpoint: !GetAtt RequestsQueue.Arn
       RawMessageDelivery: true
+
+  ApiToSnsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: apigateway.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: PublishToRequestsTopic
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref RequestsTopic
+
+  RdsApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: rds-requests-api
+      StageName: v1
+      DefinitionBody:
+        openapi: '3.0.1'
+        info:
+          title: rds-requests-api
+          version: '1.0'
+        x-amazon-apigateway-request-validators:
+          validate-body:
+            validateRequestBody: true
+            validateRequestParameters: false
+        x-amazon-apigateway-request-validator: validate-body
+        paths:
+          /requests:
+            post:
+              security:
+                - api_key: []
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema:
+                      $ref: '#/components/schemas/DbRequest'
+              responses:
+                '202': { description: Request accepted }
+                '400': { description: Invalid request }
+                '502': { description: Could not queue the request }
+              x-amazon-apigateway-integration:
+                type: aws
+                httpMethod: POST
+                uri: !Sub arn:aws:apigateway:${AWS::Region}:sns:action/Publish
+                credentials: !GetAtt ApiToSnsRole.Arn
+                passthroughBehavior: never
+                requestParameters:
+                  integration.request.header.Content-Type: "'application/x-www-form-urlencoded'"
+                requestTemplates:
+                  application/json: !Sub "Action=Publish&TopicArn=$util.urlEncode('${RequestsTopic}')&Message=$util.urlEncode($input.body)"
+                responses:
+                  '2\d{2}':
+                    statusCode: '202'
+                    responseTemplates:
+                      application/json: '{"status": "accepted"}'
+                  '4\d{2}':
+                    statusCode: '400'
+                    responseTemplates:
+                      application/json: '{"status": "rejected"}'
+                  default:
+                    statusCode: '502'
+                    responseTemplates:
+                      application/json: '{"status": "error"}'
+        components:
+          schemas:
+            DbRequest:
+              type: object
+              required: [db_name, engine, environment]
+              additionalProperties: false
+              properties:
+                db_name:
+                  type: string
+                  pattern: '^[a-z][a-z0-9_]{2,30}$'
+                engine:
+                  type: string
+                  enum: [mysql, postgres]
+                environment:
+                  type: string
+                  enum: [dev, prod]
+          securitySchemes:
+            api_key:
+              type: apiKey
+              name: x-api-key
+              in: header
+
+  RdsApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    Properties:
+      Enabled: true
+
+  RdsUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    Properties:
+      ApiStages:
+        - ApiId: !Ref RdsApi
+          Stage: !Ref RdsApi.Stage
+      Throttle:
+        RateLimit: 5
+        BurstLimit: 10
+      Quota:
+        Limit: 500
+        Period: DAY
+
+  RdsUsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref RdsApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref RdsUsagePlan
+
+Outputs:
+  RequestsTopicArn:
+    Value: !Ref RequestsTopic
+  RequestsQueueUrl:
+    Value: !Ref RequestsQueue
+  DeadLetterQueueUrl:
+    Value: !Ref DeadLetterQueue
+  ApiUrl:
+    Value: !Sub https://${RdsApi}.execute-api.${AWS::Region}.amazonaws.com/v1/requests
+  ApiKeyId:
+    Value: !Ref RdsApiKey
